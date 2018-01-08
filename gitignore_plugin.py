@@ -6,6 +6,10 @@ import threading
 import platform
 from time import sleep
 
+import logging
+logger = logging.getLogger('GITIGNORE')
+
+
 # Used for output suppression when calling subprocess functions; see
 # http://stackoverflow.com/questions/10251391/suppressing-output-in-python-subprocess-call
 devnull = open(os.devnull, 'w')
@@ -42,6 +46,10 @@ def update_file_exclude_patterns():
     Also includes any additional files or folders listed in the
     "extra_file_exclude_patterns" and "extra_folder_exclude_patterns" settings.
     """
+
+    if not is_updare_required():
+        return
+
     s = sublime.load_settings("Preferences.sublime-settings")
     file_exclude_patterns = s.get('extra_file_exclude_patterns', []) or []
     folder_exclude_patterns = s.get('extra_folder_exclude_patterns', []) or []
@@ -74,22 +82,51 @@ def update_file_exclude_patterns():
         s.set('folder_exclude_patterns', list(folder_exclude_patterns))
         sublime.save_settings("Preferences.sublime-settings")
 
+def is_updare_required():
+    open_folders = get_safe_folders()
+
+    s = sublime.load_settings('Preferences.sublime-settings')
+    prev_folders = set(s.get('gitignorer_prev_folders', []) or [])
+    curr_folders = set(open_folders)
+    if prev_folders == curr_folders:
+        return False
+    else:
+        s.set('gitignorer_prev_folders', list(open_folders))
+        sublime.save_settings("Preferences.sublime-settings")
+        logger.warn('gitignorer: CPU storm is coming! %s' % str(open_folders))
+        return True
+
 def all_ignored_paths():
     """
     Returns a list of all .gitignored files or folders contained in repos
     contained within or containing any folders open in any open windows.
     """
 
-    open_folders = set()
-    for window in sublime.windows():
-        open_folders.update(window.folders())
-
+    open_folders = get_safe_folders()
     all_ignored_paths = set()
     for folder in open_folders:
         ignored_paths = folder_ignored_paths(folder)
         all_ignored_paths.update(ignored_paths)
 
     return list(all_ignored_paths)
+
+def get_safe_folders():
+    open_folders = set()
+    for window in sublime.windows():
+        folders = window.folders()
+        good_folders = [elm for elm in folders if not_home_git(elm)]
+        open_folders.update(good_folders)
+    return open_folders
+
+def not_home_git(folder):
+    home = os.path.expanduser('~')
+    if not is_in_git_repo(folder):
+        return True
+    else:
+        return git_root_repo(folder) != home
+
+def git_root_repo(folder):
+    return subprocess.Popen('git rev-parse --show-toplevel', shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=folder).stdout.read().strip().decode('utf-8')
 
 def folder_ignored_paths(folder):
     """
@@ -187,6 +224,7 @@ def repo_ignored_paths(git_repo):
     relative_paths = [line.replace(u'Would remove ', u'', 1).rstrip(u'/')
                       for line in lines]
     absolute_paths = [os.path.join(git_repo, path) for path in relative_paths]
+
     return absolute_paths
 
 def is_first_launch():
